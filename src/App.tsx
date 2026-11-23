@@ -98,8 +98,15 @@ export default function App() {
         setProducts(liveProducts);
         setIsSeededInDb(seeded);
       },
-      () => {
-        showToast('Не удалось загрузить обновления каталога');
+      (err) => {
+        let detail = err.message;
+        try {
+          const parsed = JSON.parse(err.message) as {error?: string};
+          if (typeof parsed?.error === 'string') detail = parsed.error;
+        } catch {
+          // Keep raw message
+        }
+        showToast(`Ошибка Firebase: ${detail}`);
       },
     );
     return () => unsubscribe();

@@ -7,23 +7,12 @@ import {
   type User,
 } from 'firebase/auth';
 import {doc, getDocFromServer, getFirestore, type Firestore} from 'firebase/firestore';
-import fallbackConfig from '../../firebase-applet-config.json';
-
-export interface FirebaseEnvConfig {
-  apiKey: string;
-  authDomain: string;
-  projectId: string;
-  storageBucket: string;
-  messagingSenderId: string;
-  appId: string;
-  databaseId?: string;
-}
+import firebaseConfig from '../../firebase-applet-config.json';
 
 export interface FirestoreContext {
   app: FirebaseApp;
   auth: Auth;
   db: Firestore;
-  usingCustomEnv: boolean;
 }
 
 export enum OperationType {
@@ -52,20 +41,9 @@ export interface FirestoreErrorInfo {
   };
 }
 
-function readBuildTimeFirebaseEnv(): FirebaseEnvConfig {
-  return {
-    apiKey: String(import.meta.env.VITE_FIREBASE_API_KEY || '').trim(),
-    authDomain: String(import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || '').trim(),
-    projectId: String(import.meta.env.VITE_FIREBASE_PROJECT_ID || '').trim(),
-    storageBucket: String(import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || '').trim(),
-    messagingSenderId: String(import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || '').trim(),
-    appId: String(import.meta.env.VITE_FIREBASE_APP_ID || '').trim(),
-    databaseId: String(import.meta.env.VITE_FIREBASE_DATABASE_ID || '').trim(),
-  };
-}
-
 let cachedContext: FirestoreContext | null = null;
 let anonymousAuthPromise: Promise<User | null> | null = null;
+let lastAuthErrorMessage: string | null = null;
 let connectionTested = false;
 
 async function testConnection(db: Firestore): Promise<void> {
@@ -83,36 +61,34 @@ async function testConnection(db: Firestore): Promise<void> {
 export function resolveFirestoreContext(): FirestoreContext {
   if (cachedContext) return cachedContext;
 
-  const envConfig = readBuildTimeFirebaseEnv();
-  const usingCustomEnv = Boolean(envConfig.apiKey && envConfig.projectId);
-
-  let app: FirebaseApp;
-  let db: Firestore;
-
-  if (usingCustomEnv) {
-    app = getApps().length ? getApp() : initializeApp(envConfig);
-    const targetDbId =
-      envConfig.databaseId ||
-      (envConfig.projectId === fallbackConfig.projectId
-        ? fallbackConfig.firestoreDatabaseId
-        : '');
-    db = targetDbId ? getFirestore(app, targetDbId) : getFirestore(app);
-  } else {
-    app = getApps().length ? getApp() : initializeApp(fallbackConfig);
-    db = fallbackConfig.firestoreDatabaseId
-      ? getFirestore(app, fallbackConfig.firestoreDatabaseId)
-      : getFirestore(app);
-  }
-
+  const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
+  const db = firebaseConfig.firestoreDatabaseId
+    ? getFirestore(app, firebaseConfig.firestoreDatabaseId)
+    : getFirestore(app);
   const auth = getAuth(app);
-  cachedContext = {app, auth, db, usingCustomEnv};
+
+  cachedContext = {app, auth, db};
   void testConnection(db);
   return cachedContext;
 }
 
+function formatFirebaseErrorText(err: unknown): string {
+  if (err && typeof err === 'object') {
+    const code = 'code' in err && typeof err.code === 'string' ? err.code : '';
+    const msg = 'message' in err && typeof err.message === 'string' ? err.message : '';
+    if (code && msg) return `[${code}] ${msg}`;
+    if (msg) return msg;
+    if (code) return code;
+  }
+  return String(err || 'Unknown Firebase error');
+}
+
 export async function ensureAnonymousAuth(): Promise<User | null> {
   const {auth} = resolveFirestoreContext();
-  if (auth.currentUser) return auth.currentUser;
+  if (auth.currentUser) {
+    lastAuthErrorMessage = null;
+    return auth.currentUser;
+  }
 
   if (!anonymousAuthPromise) {
     anonymousAuthPromise = (async () => {
@@ -129,15 +105,28 @@ export async function ensureAnonymousAuth(): Promise<User | null> {
           },
         );
       });
-      if (existing) return existing;
-      const credential = await signInAnonymously(auth);
-      return credential.user;
+      if (existing) {
+        lastAuthErrorMessage = null;
+        return existing;
+      }
+      try {
+        const credential = await signInAnonymously(auth);
+        lastAuthErrorMessage = null;
+        return credential.user;
+      } catch (err) {
+        lastAuthErrorMessage = formatFirebaseErrorText(err);
+        throw err;
+      }
     })().finally(() => {
       anonymousAuthPromise = null;
     });
   }
 
   return anonymousAuthPromise;
+}
+
+export function getLastAuthErrorMessage(): string | null {
+  return lastAuthErrorMessage;
 }
 
 export function getCurrentUid(): string | null {
@@ -154,9 +143,14 @@ export function handleFirestoreError(
   path: string | null,
 ): never {
   const currentUser = cachedContext?.auth.currentUser ?? null;
+  const rawError = formatFirebaseErrorText(error);
+  const combinedError =
+    lastAuthErrorMessage && !rawError.includes(lastAuthErrorMessage)
+      ? `${rawError} (Auth: ${lastAuthErrorMessage})`
+      : rawError;
 
   const errInfo: FirestoreErrorInfo = {
-    error: error instanceof Error ? error.message : String(error),
+    error: combinedError,
     authInfo: {
       userId: currentUser?.uid ?? null,
       email: currentUser?.email ?? null,

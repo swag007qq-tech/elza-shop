@@ -52,24 +52,28 @@ function toggleRarityList(list: PetRarityBadge[], badge: PetRarityBadge): PetRar
 }
 
 function formatFriendlyFirestoreError(err: unknown, fallback: string): string {
-  if (!(err instanceof Error)) return fallback;
+  if (!(err instanceof Error)) return String(err || fallback);
   let rawMessage = err.message;
+  let pathInfo = '';
   try {
-    const parsed = JSON.parse(err.message) as {error?: string};
-    if (typeof parsed?.error === 'string') {
-      rawMessage = parsed.error;
+    const parsed = JSON.parse(err.message) as {error?: string; path?: string};
+    if (typeof parsed?.error === 'string' && parsed.error.trim()) {
+      rawMessage = parsed.error.trim();
+    }
+    if (typeof parsed?.path === 'string' && parsed.path.trim()) {
+      pathInfo = ` (${parsed.path})`;
     }
   } catch {
     // Not JSON
   }
   const lower = rawMessage.toLowerCase();
   if (lower.includes('operation-not-allowed') || lower.includes('admin-restricted-operation')) {
-    return 'Включите анонимную авторизацию (Anonymous) в Firebase Console → Authentication → Sign-in method.';
+    return `Firebase: ${rawMessage}${pathInfo} — включите Anonymous в Firebase Console → Authentication → Sign-in method.`;
   }
   if (lower.includes('permission') || lower.includes('insufficient')) {
-    return 'Нет прав доступа в Firestore: проверьте правила безопасности для коллекций products и app_config (и включённую анонимную авторизацию).';
+    return `Firebase: ${rawMessage}${pathInfo} — проверьте правила доступа Firestore для коллекций products и app_config.`;
   }
-  return rawMessage || fallback;
+  return rawMessage ? `Firebase: ${rawMessage}${pathInfo}` : fallback;
 }
 
 async function compressImageFileToDataUrl(file: File): Promise<string> {
@@ -503,8 +507,8 @@ export const AdminModal: React.FC<AdminModalProps> = ({
                 {isConfigured === null
                   ? 'Проверяем настройки доступа в Firestore...'
                   : isConfigured === false
-                    ? 'Задайте секретный пароль для входа в управление магазином — он сохранится в защищённом хеше в Firestore.'
-                    : 'Введите пароль администратора для редактирования каталога.'}
+                    ? 'Пароль ещё не задан. Придумайте любой пароль администратора (от 4 символов) — он сохранится в Firestore, и дальше вы будете входить по нему.'
+                    : 'Введите заданный ранее пароль администратора для редактирования каталога.'}
               </p>
 
               <input

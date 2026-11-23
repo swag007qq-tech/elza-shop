@@ -83,7 +83,7 @@ function sanitizeProductId(rawId: string): string {
 }
 
 export function subscribeToPublishedProducts(
-  onData: (products: ProductItem[], isSeededInDb: boolean, usingCustomEnv: boolean) => void,
+  onData: (products: ProductItem[], isSeededInDb: boolean) => void,
   onError?: (err: Error) => void,
 ): () => void {
   let isActive = true;
@@ -94,16 +94,16 @@ export function subscribeToPublishedProducts(
     .catch(() => null)
     .then(() => {
       if (!isActive) return;
-      const {db, usingCustomEnv} = resolveFirestoreContext();
+      const {db} = resolveFirestoreContext();
       const productsRef = collection(db, path);
-      const q = usingCustomEnv ? productsRef : query(productsRef, where('isPublished', '==', true));
+      const q = query(productsRef, where('isPublished', '==', true));
 
       unsubscribeSnapshot = onSnapshot(
         q,
         (snapshot) => {
           if (!isActive) return;
           if (snapshot.empty) {
-            onData(DEFAULT_PRODUCTS, false, usingCustomEnv);
+            onData(DEFAULT_PRODUCTS, false);
             return;
           }
           const list: ProductItem[] = snapshot.docs
@@ -128,7 +128,7 @@ export function subscribeToPublishedProducts(
             .filter((item) => item.isPublished !== false);
 
           list.sort((a, b) => (a.sortOrder ?? 999) - (b.sortOrder ?? 999));
-          onData(list, true, usingCustomEnv);
+          onData(list, true);
         },
         (error) => {
           if (!isActive) return;
