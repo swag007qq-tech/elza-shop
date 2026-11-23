@@ -61,7 +61,7 @@ export default function App() {
   const [isCartOpen, setIsCartOpen] = useState(false);
   const [isFavoritesOpen, setIsFavoritesOpen] = useState(false);
   const [isAdminModalOpen, setIsAdminModalOpen] = useState(false);
-  const [adminToken, setAdminToken] = useState<string | null>(null);
+  const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
 
   const [recentlyAddedId, setRecentlyAddedId] = useState<string | null>(null);
   const [heartBurst, setHeartBurst] = useState<{
@@ -348,8 +348,8 @@ export default function App() {
         isOpen={isAdminModalOpen}
         products={products}
         isSeededInDb={isSeededInDb}
-        adminToken={adminToken}
-        onAdminTokenChange={setAdminToken}
+        isAdminAuthenticated={isAdminAuthenticated}
+        onAdminAuthChange={setIsAdminAuthenticated}
         onClose={() => setIsAdminModalOpen(false)}
         onNotify={(msg) => showToast(msg)}
       />

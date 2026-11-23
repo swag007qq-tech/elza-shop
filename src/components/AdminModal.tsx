@@ -11,6 +11,11 @@ import {
   X,
 } from 'lucide-react';
 import {
+  checkAdminPasswordConfigured,
+  claimOrUpdateAdminPassword,
+  verifyAdminPasswordInFirestore,
+} from '../lib/adminAuthService';
+import {
   createProductInFirestore,
   deleteProductInFirestore,
   sanitizeImageUrl,
@@ -24,8 +29,8 @@ interface AdminModalProps {
   isOpen: boolean;
   products: ProductItem[];
   isSeededInDb: boolean;
-  adminToken: string | null;
-  onAdminTokenChange: (token: string | null) => void;
+  isAdminAuthenticated: boolean;
+  onAdminAuthChange: (authenticated: boolean) => void;
   onClose: () => void;
   onNotify: (message: string) => void;
 }
@@ -58,18 +63,70 @@ function formatFriendlyFirestoreError(err: unknown, fallback: string): string {
     // Not JSON
   }
   const lower = rawMessage.toLowerCase();
+  if (lower.includes('operation-not-allowed') || lower.includes('admin-restricted-operation')) {
+    return 'Включите анонимную авторизацию (Anonymous) в Firebase Console → Authentication → Sign-in method.';
+  }
   if (lower.includes('permission') || lower.includes('insufficient')) {
-    return 'Нет прав на запись в Firestore: проверьте переменные VITE_FIREBASE_* и правила доступа к коллекции products.';
+    return 'Нет прав доступа в Firestore: проверьте правила безопасности для коллекций products и app_config (и включённую анонимную авторизацию).';
   }
   return rawMessage || fallback;
+}
+
+async function compressImageFileToDataUrl(file: File): Promise<string> {
+  if (!/^image\/(png|jpeg|jpg|webp|gif)$/i.test(file.type)) {
+    throw new Error('Разрешены только изображения PNG, JPG, WEBP или GIF');
+  }
+
+  const objectUrl = URL.createObjectURL(file);
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const el = new Image();
+      el.onload = () => resolve(el);
+      el.onerror = () => reject(new Error('Не удалось прочитать изображение'));
+      el.src = objectUrl;
+    });
+
+    const attempts: {maxSide: number; quality: number}[] = [
+      {maxSide: 560, quality: 0.85},
+      {maxSide: 420, quality: 0.75},
+      {maxSide: 320, quality: 0.65},
+    ];
+
+    for (const attempt of attempts) {
+      const scale = Math.min(1, attempt.maxSide / Math.max(img.width, img.height, 1));
+      const width = Math.max(1, Math.round(img.width * scale));
+      const height = Math.max(1, Math.round(img.height * scale));
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) throw new Error('Не удалось обработать изображение');
+      ctx.clearRect(0, 0, width, height);
+      ctx.drawImage(img, 0, 0, width, height);
+
+      const webpUrl = canvas.toDataURL('image/webp', attempt.quality);
+      if (webpUrl.startsWith('data:image/webp') && webpUrl.length <= 360000) {
+        return webpUrl;
+      }
+
+      const jpegUrl = canvas.toDataURL('image/jpeg', attempt.quality);
+      if (jpegUrl.length <= 360000) {
+        return jpegUrl;
+      }
+    }
+
+    throw new Error('Изображение слишком тяжёлое даже после сжатия. Выберите картинку поменьше.');
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
 }
 
 export const AdminModal: React.FC<AdminModalProps> = ({
   isOpen,
   products,
   isSeededInDb,
-  adminToken,
-  onAdminTokenChange,
+  isAdminAuthenticated,
+  onAdminAuthChange,
   onClose,
   onNotify,
 }) => {
@@ -77,6 +134,11 @@ export const AdminModal: React.FC<AdminModalProps> = ({
   const [passwordInput, setPasswordInput] = useState('');
   const [authError, setAuthError] = useState<string | null>(null);
   const [isSubmittingAuth, setIsSubmittingAuth] = useState(false);
+
+  // Optional password change form when already authenticated
+  const [showChangePassword, setShowChangePassword] = useState(false);
+  const [newPasswordInput, setNewPasswordInput] = useState('');
+  const [isUpdatingPassword, setIsUpdatingPassword] = useState(false);
 
   // Draft map for editing existing products
   const [drafts, setDrafts] = useState<Record<string, EditableDraft>>({});
@@ -104,28 +166,25 @@ export const AdminModal: React.FC<AdminModalProps> = ({
   }, [isOpen, onClose]);
 
   useEffect(() => {
-    if (!isOpen) return;
+    if (!isOpen || isAdminAuthenticated) return;
     let active = true;
-    const headers: Record<string, string> = {};
-    if (adminToken) headers.Authorization = `Bearer ${adminToken}`;
+    setAuthError(null);
+    setIsConfigured(null);
 
-    fetch('/api/admin/status', {headers})
-      .then((res) => res.json())
-      .then((data: {configured?: boolean; authenticated?: boolean}) => {
-        if (!active) return;
-        setIsConfigured(Boolean(data.configured));
-        if (!data.authenticated && adminToken) {
-          onAdminTokenChange(null);
-        }
+    checkAdminPasswordConfigured()
+      .then((configured) => {
+        if (active) setIsConfigured(configured);
       })
-      .catch(() => {
-        if (active) setIsConfigured(true);
+      .catch((err) => {
+        if (!active) return;
+        setIsConfigured(true);
+        setAuthError(formatFriendlyFirestoreError(err, 'Не удалось подключиться к Firestore'));
       });
 
     return () => {
       active = false;
     };
-  }, [isOpen, adminToken, onAdminTokenChange]);
+  }, [isOpen, isAdminAuthenticated]);
 
   // Sync editable drafts when products list updates
   useEffect(() => {
@@ -157,61 +216,66 @@ export const AdminModal: React.FC<AdminModalProps> = ({
     setIsSubmittingAuth(true);
     setAuthError(null);
     try {
-      const endpoint = isConfigured === false ? '/api/admin/claim' : '/api/admin/login';
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({password: trimmed}),
-      });
-      const data = (await res.json()) as {token?: string; error?: string};
-      if (!res.ok || !data.token) {
-        setAuthError(data.error || 'Не удалось войти');
-        return;
+      const configuredNow =
+        isConfigured === null ? await checkAdminPasswordConfigured() : isConfigured;
+      setIsConfigured(configuredNow);
+
+      if (!configuredNow) {
+        await claimOrUpdateAdminPassword(trimmed);
+        setIsConfigured(true);
+        onAdminAuthChange(true);
+        setPasswordInput('');
+        setActionError(null);
+        onNotify('Пароль сохранён в Firestore, вход выполнен');
+      } else {
+        const ok = await verifyAdminPasswordInFirestore(trimmed);
+        if (!ok) {
+          setAuthError('Неверный пароль администратора');
+          return;
+        }
+        onAdminAuthChange(true);
+        setPasswordInput('');
+        setActionError(null);
+        onNotify('Вход администратора выполнен');
       }
-      onAdminTokenChange(data.token);
-      setIsConfigured(true);
-      setPasswordInput('');
-      setActionError(null);
-      onNotify('Вход администратора выполнен');
-    } catch {
-      setAuthError('Ошибка соединения с сервером');
+    } catch (err) {
+      setAuthError(formatFriendlyFirestoreError(err, 'Не удалось выполнить вход через Firestore'));
     } finally {
       setIsSubmittingAuth(false);
     }
   };
 
+  const handleUpdatePassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!isAdminAuthenticated) return;
+    setIsUpdatingPassword(true);
+    setActionError(null);
+    try {
+      await claimOrUpdateAdminPassword(newPasswordInput);
+      setNewPasswordInput('');
+      setShowChangePassword(false);
+      onNotify('Пароль администратора обновлён в Firestore');
+    } catch (err) {
+      const msg = formatFriendlyFirestoreError(err, 'Не удалось обновить пароль');
+      setActionError(msg);
+      onNotify(msg);
+    } finally {
+      setIsUpdatingPassword(false);
+    }
+  };
+
   const handleFileUpload = async (file: File, targetId: 'new' | string) => {
-    if (!adminToken) return;
-    if (file.size > 4 * 1024 * 1024) {
-      onNotify('Файл слишком большой (максимум 4 МБ)');
+    if (!isAdminAuthenticated) return;
+    if (file.size > 10 * 1024 * 1024) {
+      onNotify('Файл слишком большой (максимум 10 МБ)');
       return;
     }
 
     setUploadingTarget(targetId);
     try {
-      const dataUrl = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(String(reader.result || ''));
-        reader.onerror = () => reject(new Error('Не удалось прочитать файл'));
-        reader.readAsDataURL(file);
-      });
-
-      const res = await fetch('/api/admin/upload', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${adminToken}`,
-        },
-        body: JSON.stringify({dataUrl}),
-      });
-      const data = (await res.json()) as {url?: string; error?: string};
-      if (!res.ok || !data.url) {
-        onNotify(data.error || 'Ошибка загрузки изображения');
-        return;
-      }
-
+      const compressedDataUrl = await compressImageFileToDataUrl(file);
       if (targetId === 'new') {
-        setNewImage(data.url);
+        setNewImage(compressedDataUrl);
       } else {
         setDrafts((prev) => ({
           ...prev,
@@ -223,13 +287,13 @@ export const AdminModal: React.FC<AdminModalProps> = ({
               image: '',
               rarities: [],
             }),
-            image: data.url!,
+            image: compressedDataUrl,
           },
         }));
       }
-      onNotify('Фотография загружена');
-    } catch {
-      onNotify('Ошибка при загрузке фотографии');
+      onNotify('Фотография подготовлена и готова к сохранению');
+    } catch (err) {
+      onNotify(err instanceof Error ? err.message : 'Ошибка при обработке фотографии');
     } finally {
       setUploadingTarget(null);
     }
@@ -237,7 +301,7 @@ export const AdminModal: React.FC<AdminModalProps> = ({
 
   const handleCreateProduct = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!adminToken) return;
+    if (!isAdminAuthenticated) return;
     if (!newTitle.trim()) {
       onNotify('Введите название товара');
       return;
@@ -278,7 +342,7 @@ export const AdminModal: React.FC<AdminModalProps> = ({
   };
 
   const handleSaveProduct = async (product: ProductItem, index: number) => {
-    if (!adminToken) return;
+    if (!isAdminAuthenticated) return;
     const draft = drafts[product.id];
     if (!draft) return;
     const parsedPrice = Number(draft.price);
@@ -313,7 +377,7 @@ export const AdminModal: React.FC<AdminModalProps> = ({
   };
 
   const handleDeleteProduct = async (product: ProductItem) => {
-    if (!adminToken) return;
+    if (!isAdminAuthenticated) return;
     setDeletingId(product.id);
     setActionError(null);
     try {
@@ -332,7 +396,7 @@ export const AdminModal: React.FC<AdminModalProps> = ({
   };
 
   const handleSeedStarterProducts = async () => {
-    if (!adminToken) return;
+    if (!isAdminAuthenticated) return;
     setIsSeeding(true);
     setActionError(null);
     try {
@@ -348,7 +412,8 @@ export const AdminModal: React.FC<AdminModalProps> = ({
   };
 
   const handleLogoutAdmin = () => {
-    onAdminTokenChange(null);
+    onAdminAuthChange(false);
+    setShowChangePassword(false);
     setActionError(null);
     onNotify('Вы вышли из режима администратора');
   };
@@ -385,15 +450,25 @@ export const AdminModal: React.FC<AdminModalProps> = ({
           </div>
 
           <div className="flex items-center gap-2">
-            {adminToken && (
-              <button
-                type="button"
-                onClick={handleLogoutAdmin}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white hover:bg-[#F5E7E2] border border-[#EBD8D1] text-[13px] font-bold text-[#7D5E55] cursor-pointer transition-colors"
-              >
-                <LogOut className="w-3.5 h-3.5" />
-                <span className="hidden sm:inline">Выйти</span>
-              </button>
+            {isAdminAuthenticated && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setShowChangePassword((prev) => !prev)}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white hover:bg-[#F5E7E2] border border-[#EBD8D1] text-[12.5px] font-bold text-[#7D5E55] cursor-pointer transition-colors"
+                >
+                  <KeyRound className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">Пароль</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleLogoutAdmin}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white hover:bg-[#F5E7E2] border border-[#EBD8D1] text-[13px] font-bold text-[#7D5E55] cursor-pointer transition-colors"
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">Выйти</span>
+                </button>
+              </>
             )}
             <button
               type="button"
@@ -408,7 +483,7 @@ export const AdminModal: React.FC<AdminModalProps> = ({
 
         {/* Body */}
         <div className="flex-1 overflow-y-auto p-4 sm:p-7 space-y-6">
-          {!adminToken ? (
+          {!isAdminAuthenticated ? (
             <form
               onSubmit={handlePasswordSubmit}
               className="max-w-[420px] mx-auto bg-white/95 border-2 border-[#9E6B56] shadow-[0_0_20px_rgba(148,90,66,0.34)] rounded-[26px] p-5 sm:p-7 text-center"
@@ -418,14 +493,18 @@ export const AdminModal: React.FC<AdminModalProps> = ({
               </div>
 
               <h3 className="text-[20px] font-extrabold text-[#6B4E45] mb-1.5">
-                {isConfigured === false
-                  ? 'Активация пароля администратора'
-                  : 'Вход для администратора'}
+                {isConfigured === null
+                  ? 'Подключение к базе...'
+                  : isConfigured === false
+                    ? 'Первичная настройка пароля'
+                    : 'Вход для администратора'}
               </h3>
               <p className="text-[13.5px] font-semibold text-[#8A6D64] mb-5 leading-snug">
-                {isConfigured === false
-                  ? 'Задайте секретный пароль для входа в управление магазином (он сохранится в защищённом хеше на сервере).'
-                  : 'Введите специальный пароль администратора для редактирования каталога.'}
+                {isConfigured === null
+                  ? 'Проверяем настройки доступа в Firestore...'
+                  : isConfigured === false
+                    ? 'Задайте секретный пароль для входа в управление магазином — он сохранится в защищённом хеше в Firestore.'
+                    : 'Введите пароль администратора для редактирования каталога.'}
               </p>
 
               <input
@@ -434,18 +513,19 @@ export const AdminModal: React.FC<AdminModalProps> = ({
                 onChange={(e) => setPasswordInput(e.target.value)}
                 placeholder="Введите пароль"
                 autoFocus
-                className="w-full h-[48px] px-4 rounded-[16px] bg-[#FCF3EF] border border-[#DFC7BE] text-[#6B4E45] font-bold text-[15.5px] placeholder:text-[#B69D95] focus:outline-none focus:border-[#7D5E55] mb-3"
+                disabled={isConfigured === null}
+                className="w-full h-[48px] px-4 rounded-[16px] bg-[#FCF3EF] border border-[#DFC7BE] text-[#6B4E45] font-bold text-[15.5px] placeholder:text-[#B69D95] focus:outline-none focus:border-[#7D5E55] mb-3 disabled:opacity-60"
               />
 
               {authError && (
-                <div className="mb-3 px-4 py-2 rounded-[14px] bg-[#FADCE0] text-[#7A3E4A] text-[13.5px] font-bold">
+                <div className="mb-3 px-4 py-2 rounded-[14px] bg-[#FADCE0] text-[#7A3E4A] text-[13px] font-bold leading-snug">
                   {authError}
                 </div>
               )}
 
               <button
                 type="submit"
-                disabled={isSubmittingAuth}
+                disabled={isSubmittingAuth || isConfigured === null}
                 className="elza-buy-btn w-full h-[50px] rounded-full text-white font-bold text-[17px] cursor-pointer transition-all duration-150 hover:brightness-[1.03] active:scale-[0.98] disabled:opacity-60"
               >
                 {isSubmittingAuth
@@ -457,6 +537,28 @@ export const AdminModal: React.FC<AdminModalProps> = ({
             </form>
           ) : (
             <>
+              {showChangePassword && (
+                <form
+                  onSubmit={handleUpdatePassword}
+                  className="bg-white/95 border-2 border-[#9E6B56] shadow-[0_0_16px_rgba(148,90,66,0.24)] rounded-[22px] p-4 flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5"
+                >
+                  <input
+                    type="password"
+                    value={newPasswordInput}
+                    onChange={(e) => setNewPasswordInput(e.target.value)}
+                    placeholder="Новый пароль администратора (от 4 символов)"
+                    className="flex-1 h-[42px] px-3.5 rounded-[14px] bg-[#FCF3EF] border border-[#E5CFC7] text-[#6B4E45] font-bold text-[14px] focus:outline-none focus:border-[#7D5E55]"
+                  />
+                  <button
+                    type="submit"
+                    disabled={isUpdatingPassword}
+                    className="h-[42px] px-5 rounded-full bg-[#7D5E55] hover:bg-[#6E5148] text-white font-bold text-[14px] cursor-pointer transition-colors disabled:opacity-60"
+                  >
+                    {isUpdatingPassword ? 'Сохранение...' : 'Обновить пароль'}
+                  </button>
+                </form>
+              )}
+
               {actionError && (
                 <div className="bg-[#FADCE0]/85 border-2 border-[#C47C8E] rounded-[22px] p-4 text-[#7A3E4A] text-[13.5px] font-bold leading-snug">
                   {actionError}
@@ -509,7 +611,7 @@ export const AdminModal: React.FC<AdminModalProps> = ({
                     <label className="w-full h-[36px] rounded-full bg-[#7D5E55] hover:bg-[#6E5148] text-white text-[13px] font-bold flex items-center justify-center gap-1.5 cursor-pointer transition-colors">
                       <Upload className="w-3.5 h-3.5" />
                       <span>
-                        {uploadingTarget === 'new' ? 'Загрузка...' : 'Загрузить фото'}
+                        {uploadingTarget === 'new' ? 'Обработка...' : 'Загрузить фото'}
                       </span>
                       <input
                         type="file"
@@ -585,9 +687,13 @@ export const AdminModal: React.FC<AdminModalProps> = ({
                       </label>
                       <input
                         type="text"
-                        value={newImage}
+                        value={newImage.startsWith('data:image/') ? '' : newImage}
                         onChange={(e) => setNewImage(e.target.value)}
-                        placeholder="Необязательно: https://..."
+                        placeholder={
+                          newImage.startsWith('data:image/')
+                            ? 'Загружено фото с устройства'
+                            : 'Необязательно: https://...'
+                        }
                         maxLength={2048}
                         className="w-full h-[40px] px-3.5 rounded-[14px] bg-[#FCF3EF] border border-[#E5CFC7] text-[#6B4E45] font-semibold text-[13.5px] focus:outline-none focus:border-[#7D5E55]"
                       />
@@ -737,14 +843,18 @@ export const AdminModal: React.FC<AdminModalProps> = ({
 
                           <input
                             type="text"
-                            value={draft.image}
+                            value={draft.image.startsWith('data:image/') ? '' : draft.image}
                             onChange={(e) =>
                               setDrafts((prev) => ({
                                 ...prev,
                                 [product.id]: {...draft, image: e.target.value},
                               }))
                             }
-                            placeholder="Ссылка на фото (URL)"
+                            placeholder={
+                              draft.image.startsWith('data:image/')
+                                ? 'Загружено фото с устройства (или вставьте новую URL-ссылку)'
+                                : 'Ссылка на фото (URL, необязательно)'
+                            }
                             maxLength={2048}
                             className="w-full h-[36px] px-3 rounded-[12px] bg-[#FCF3EF] border border-[#E5CFC7] text-[#7A5C53] font-semibold text-[12.5px] focus:outline-none focus:border-[#7D5E55]"
                           />

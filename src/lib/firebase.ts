@@ -1,4 +1,11 @@
 import {getApp, getApps, initializeApp, type FirebaseApp} from 'firebase/app';
+import {
+  getAuth,
+  onAuthStateChanged,
+  signInAnonymously,
+  type Auth,
+  type User,
+} from 'firebase/auth';
 import {doc, getDocFromServer, getFirestore, type Firestore} from 'firebase/firestore';
 import fallbackConfig from '../../firebase-applet-config.json';
 
@@ -14,6 +21,7 @@ export interface FirebaseEnvConfig {
 
 export interface FirestoreContext {
   app: FirebaseApp;
+  auth: Auth;
   db: Firestore;
   usingCustomEnv: boolean;
 }
@@ -57,32 +65,12 @@ function readBuildTimeFirebaseEnv(): FirebaseEnvConfig {
 }
 
 let cachedContext: FirestoreContext | null = null;
-let contextPromise: Promise<FirestoreContext> | null = null;
-
-async function fetchRuntimePublicConfig(): Promise<FirebaseEnvConfig | null> {
-  try {
-    const res = await fetch('/api/public-config');
-    if (!res.ok) return null;
-    const data = (await res.json()) as {firebase?: Partial<FirebaseEnvConfig>};
-    const fb = data?.firebase;
-    if (fb && fb.apiKey && fb.projectId) {
-      return {
-        apiKey: String(fb.apiKey || '').trim(),
-        authDomain: String(fb.authDomain || '').trim(),
-        projectId: String(fb.projectId || '').trim(),
-        storageBucket: String(fb.storageBucket || '').trim(),
-        messagingSenderId: String(fb.messagingSenderId || '').trim(),
-        appId: String(fb.appId || '').trim(),
-        databaseId: String(fb.databaseId || '').trim(),
-      };
-    }
-  } catch {
-    // Fallback to local applet config
-  }
-  return null;
-}
+let anonymousAuthPromise: Promise<User | null> | null = null;
+let connectionTested = false;
 
 async function testConnection(db: Firestore): Promise<void> {
+  if (connectionTested) return;
+  connectionTested = true;
   try {
     await getDocFromServer(doc(db, 'test', 'connection'));
   } catch (error) {
@@ -92,41 +80,72 @@ async function testConnection(db: Firestore): Promise<void> {
   }
 }
 
-export async function resolveFirestoreContext(): Promise<FirestoreContext> {
+export function resolveFirestoreContext(): FirestoreContext {
   if (cachedContext) return cachedContext;
-  if (contextPromise) return contextPromise;
 
-  contextPromise = (async () => {
-    const buildEnv = readBuildTimeFirebaseEnv();
-    const hasBuildEnv = Boolean(buildEnv.apiKey && buildEnv.projectId);
-    const runtimeEnv = hasBuildEnv ? buildEnv : await fetchRuntimePublicConfig();
+  const envConfig = readBuildTimeFirebaseEnv();
+  const usingCustomEnv = Boolean(envConfig.apiKey && envConfig.projectId);
 
-    const usingCustomEnv = Boolean(runtimeEnv && runtimeEnv.apiKey && runtimeEnv.projectId);
+  let app: FirebaseApp;
+  let db: Firestore;
 
-    let app: FirebaseApp;
-    let db: Firestore;
+  if (usingCustomEnv) {
+    app = getApps().length ? getApp() : initializeApp(envConfig);
+    const targetDbId =
+      envConfig.databaseId ||
+      (envConfig.projectId === fallbackConfig.projectId
+        ? fallbackConfig.firestoreDatabaseId
+        : '');
+    db = targetDbId ? getFirestore(app, targetDbId) : getFirestore(app);
+  } else {
+    app = getApps().length ? getApp() : initializeApp(fallbackConfig);
+    db = fallbackConfig.firestoreDatabaseId
+      ? getFirestore(app, fallbackConfig.firestoreDatabaseId)
+      : getFirestore(app);
+  }
 
-    if (usingCustomEnv && runtimeEnv) {
-      app = getApps().length ? getApp() : initializeApp(runtimeEnv);
-      const targetDbId =
-        runtimeEnv.databaseId ||
-        (runtimeEnv.projectId === fallbackConfig.projectId
-          ? fallbackConfig.firestoreDatabaseId
-          : '');
-      db = targetDbId ? getFirestore(app, targetDbId) : getFirestore(app);
-    } else {
-      app = getApps().length ? getApp() : initializeApp(fallbackConfig);
-      db = fallbackConfig.firestoreDatabaseId
-        ? getFirestore(app, fallbackConfig.firestoreDatabaseId)
-        : getFirestore(app);
-    }
+  const auth = getAuth(app);
+  cachedContext = {app, auth, db, usingCustomEnv};
+  void testConnection(db);
+  return cachedContext;
+}
 
-    cachedContext = {app, db, usingCustomEnv};
-    void testConnection(db);
-    return cachedContext;
-  })();
+export async function ensureAnonymousAuth(): Promise<User | null> {
+  const {auth} = resolveFirestoreContext();
+  if (auth.currentUser) return auth.currentUser;
 
-  return contextPromise;
+  if (!anonymousAuthPromise) {
+    anonymousAuthPromise = (async () => {
+      const existing = await new Promise<User | null>((resolve) => {
+        const unsub = onAuthStateChanged(
+          auth,
+          (user) => {
+            unsub();
+            resolve(user);
+          },
+          () => {
+            unsub();
+            resolve(null);
+          },
+        );
+      });
+      if (existing) return existing;
+      const credential = await signInAnonymously(auth);
+      return credential.user;
+    })().finally(() => {
+      anonymousAuthPromise = null;
+    });
+  }
+
+  return anonymousAuthPromise;
+}
+
+export function getCurrentUid(): string | null {
+  try {
+    return cachedContext?.auth.currentUser?.uid ?? null;
+  } catch {
+    return null;
+  }
 }
 
 export function handleFirestoreError(
@@ -134,15 +153,21 @@ export function handleFirestoreError(
   operationType: OperationType,
   path: string | null,
 ): never {
+  const currentUser = cachedContext?.auth.currentUser ?? null;
+
   const errInfo: FirestoreErrorInfo = {
     error: error instanceof Error ? error.message : String(error),
     authInfo: {
-      userId: null,
-      email: null,
-      emailVerified: null,
-      isAnonymous: null,
-      tenantId: null,
-      providerInfo: [],
+      userId: currentUser?.uid ?? null,
+      email: currentUser?.email ?? null,
+      emailVerified: currentUser?.emailVerified ?? null,
+      isAnonymous: currentUser?.isAnonymous ?? null,
+      tenantId: currentUser?.tenantId ?? null,
+      providerInfo:
+        currentUser?.providerData?.map((provider) => ({
+          providerId: provider.providerId,
+          email: provider.email,
+        })) || [],
     },
     operationType,
     path,

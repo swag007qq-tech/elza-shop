@@ -28,9 +28,9 @@
         },
         "image": {
           "type": "string",
-          "description": "Product image URL or asset path",
+          "description": "Product image URL, asset path, or compressed raster data URI",
           "minLength": 1,
-          "maxLength": 2048
+          "maxLength": 450000
         },
         "rarities": {
           "type": "array",
@@ -46,7 +46,7 @@
         },
         "createdBy": {
           "type": "string",
-          "description": "UID of the admin user who created the product",
+          "description": "UID of the anonymous admin session that created the product",
           "maxLength": 128
         },
         "createdAt": {
@@ -72,33 +72,50 @@
         "updatedAt"
       ]
     },
-    "AdminMember": {
-      "title": "AdminMember",
-      "description": "Authorized admin record keyed by Firebase Auth UID",
+    "AdminConfig": {
+      "title": "AdminConfig",
+      "description": "Salted PBKDF2 admin password configuration stored in Firestore",
       "type": "object",
       "properties": {
-        "email": {
+        "salt": {
           "type": "string",
-          "description": "Verified admin email address",
-          "maxLength": 160
+          "description": "Random hex salt",
+          "minLength": 8,
+          "maxLength": 128
         },
-        "createdAt": {
+        "passwordHash": {
+          "type": "string",
+          "description": "PBKDF2-SHA256 hex digest",
+          "minLength": 32,
+          "maxLength": 256
+        },
+        "algorithm": {
+          "type": "string",
+          "description": "Hash algorithm identifier",
+          "maxLength": 32
+        },
+        "updatedBy": {
+          "type": "string",
+          "description": "UID of the session that updated the config",
+          "maxLength": 128
+        },
+        "updatedAt": {
           "type": "string",
           "format": "date-time",
-          "description": "Server timestamp when admin was registered"
+          "description": "Server timestamp when config was updated"
         }
       },
-      "required": ["email", "createdAt"]
+      "required": ["salt", "passwordHash", "algorithm", "updatedBy", "updatedAt"]
     }
   },
   "firestore": {
     "/products/{productId}": {
       "schema": { "$ref": "#/entities/Product" },
-      "description": "Publicly readable catalog products managed exclusively by admins"
+      "description": "Publicly readable catalog products managed via admin panel"
     },
-    "/admins/{adminUid}": {
-      "schema": { "$ref": "#/entities/AdminMember" },
-      "description": "Admin authorization documents"
+    "/app_config/{docId}": {
+      "schema": { "$ref": "#/entities/AdminConfig" },
+      "description": "Salted admin passcode hash configuration"
     }
   }
 }

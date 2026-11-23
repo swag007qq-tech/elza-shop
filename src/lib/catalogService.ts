@@ -11,7 +11,13 @@ import {
   writeBatch,
 } from 'firebase/firestore';
 import {PET_RARITY_OPTIONS, PetRarityBadge, ProductItem} from '../types/shop';
-import {OperationType, handleFirestoreError, resolveFirestoreContext} from './firebase';
+import {
+  OperationType,
+  ensureAnonymousAuth,
+  getCurrentUid,
+  handleFirestoreError,
+  resolveFirestoreContext,
+} from './firebase';
 
 const DEFAULT_PET_NAMES = [
   'Корова',
@@ -37,6 +43,8 @@ export const DEFAULT_PRODUCTS: ProductItem[] = DEFAULT_PET_NAMES.map((title, ind
 }));
 
 const VALID_RARITIES = new Set<PetRarityBadge>(PET_RARITY_OPTIONS.map((opt) => opt.id));
+const SAFE_DATA_IMAGE_RE = /^data:image\/(?:png|jpeg|jpg|webp|gif);base64,[A-Za-z0-9+/=]+$/;
+const MAX_DATA_IMAGE_LENGTH = 450000;
 
 export function sanitizeRarities(raw: unknown): PetRarityBadge[] {
   if (!Array.isArray(raw)) return [];
@@ -52,8 +60,11 @@ export function sanitizeRarities(raw: unknown): PetRarityBadge[] {
 export function sanitizeImageUrl(rawUrl: string): string {
   const trimmed = rawUrl.trim();
   if (!trimmed) return '/assets/mystery-pet.png';
-  if (trimmed.startsWith('/assets/') || trimmed.startsWith('/uploads/')) {
+  if (trimmed.startsWith('/assets/')) {
     return trimmed.slice(0, 2048);
+  }
+  if (trimmed.length <= MAX_DATA_IMAGE_LENGTH && SAFE_DATA_IMAGE_RE.test(trimmed)) {
+    return trimmed;
   }
   try {
     const parsed = new URL(trimmed);
@@ -79,10 +90,11 @@ export function subscribeToPublishedProducts(
   let unsubscribeSnapshot: (() => void) | null = null;
   const path = 'products';
 
-  void resolveFirestoreContext()
-    .then(({db, usingCustomEnv}) => {
+  void ensureAnonymousAuth()
+    .catch(() => null)
+    .then(() => {
       if (!isActive) return;
-
+      const {db, usingCustomEnv} = resolveFirestoreContext();
       const productsRef = collection(db, path);
       const q = usingCustomEnv ? productsRef : query(productsRef, where('isPublished', '==', true));
 
@@ -129,12 +141,6 @@ export function subscribeToPublishedProducts(
           }
         },
       );
-    })
-    .catch((err) => {
-      if (!isActive) return;
-      if (onError) {
-        onError(err instanceof Error ? err : new Error('Ошибка инициализации Firestore'));
-      }
     });
 
   return () => {
@@ -148,7 +154,9 @@ export function subscribeToPublishedProducts(
 export async function seedDefaultProductsIfEmpty(): Promise<void> {
   const path = 'products';
   try {
-    const {db} = await resolveFirestoreContext();
+    await ensureAnonymousAuth().catch(() => null);
+    const {db} = resolveFirestoreContext();
+    const uid = getCurrentUid() || 'admin';
     const batch = writeBatch(db);
     DEFAULT_PRODUCTS.forEach((p, idx) => {
       const ref = doc(db, path, p.id);
@@ -161,7 +169,7 @@ export async function seedDefaultProductsIfEmpty(): Promise<void> {
         rarities: [],
         sortOrder: idx,
         isPublished: true,
-        createdBy: 'admin',
+        createdBy: uid,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
@@ -184,7 +192,9 @@ export async function createProductInFirestore(input: {
   const id = sanitizeProductId(`pet-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`);
   const path = `products/${id}`;
   try {
-    const {db} = await resolveFirestoreContext();
+    await ensureAnonymousAuth().catch(() => null);
+    const {db} = resolveFirestoreContext();
+    const uid = getCurrentUid() || 'admin';
     await setDoc(doc(db, 'products', id), {
       title: input.title.trim().slice(0, 80) || 'Новый товар',
       subtitle: (input.subtitle || '').trim().slice(0, 140),
@@ -194,7 +204,7 @@ export async function createProductInFirestore(input: {
       rarities: sanitizeRarities(input.rarities),
       sortOrder: Math.max(0, Math.min(10000, Math.floor(input.sortOrder))),
       isPublished: true,
-      createdBy: 'admin',
+      createdBy: uid,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
@@ -219,7 +229,8 @@ export async function updateProductInFirestore(
   const safeId = sanitizeProductId(id);
   const path = `products/${safeId}`;
   try {
-    const {db} = await resolveFirestoreContext();
+    await ensureAnonymousAuth().catch(() => null);
+    const {db} = resolveFirestoreContext();
     await updateDoc(doc(db, 'products', safeId), {
       title: updates.title.trim().slice(0, 80) || 'Товар',
       subtitle: (updates.subtitle || '').trim().slice(0, 140),
@@ -240,7 +251,8 @@ export async function deleteProductInFirestore(id: string): Promise<void> {
   const safeId = sanitizeProductId(id);
   const path = `products/${safeId}`;
   try {
-    const {db} = await resolveFirestoreContext();
+    await ensureAnonymousAuth().catch(() => null);
+    const {db} = resolveFirestoreContext();
     await deleteDoc(doc(db, 'products', safeId));
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, path);
