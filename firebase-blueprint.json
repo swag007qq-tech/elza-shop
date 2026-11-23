@@ -1,0 +1,104 @@
+{
+  "entities": {
+    "Product": {
+      "title": "Product",
+      "description": "Catalog product displayed in Elza Shop",
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "description": "Display name of the product",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "subtitle": {
+          "type": "string",
+          "description": "Optional short description of the product",
+          "maxLength": 140
+        },
+        "price": {
+          "type": "number",
+          "description": "Product price in currency units"
+        },
+        "currency": {
+          "type": "string",
+          "description": "Currency label such as грн",
+          "minLength": 1,
+          "maxLength": 16
+        },
+        "image": {
+          "type": "string",
+          "description": "Product image URL or asset path",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "rarities": {
+          "type": "array",
+          "description": "Optional rarity and potion badges (M, N, F, R)"
+        },
+        "sortOrder": {
+          "type": "number",
+          "description": "Numeric sort order in the catalog grid"
+        },
+        "isPublished": {
+          "type": "boolean",
+          "description": "Whether the product is visible in the public catalog"
+        },
+        "createdBy": {
+          "type": "string",
+          "description": "UID of the admin user who created the product",
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server last update timestamp"
+        }
+      },
+      "required": [
+        "title",
+        "price",
+        "currency",
+        "image",
+        "sortOrder",
+        "isPublished",
+        "createdBy",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "AdminMember": {
+      "title": "AdminMember",
+      "description": "Authorized admin record keyed by Firebase Auth UID",
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string",
+          "description": "Verified admin email address",
+          "maxLength": 160
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when admin was registered"
+        }
+      },
+      "required": ["email", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/products/{productId}": {
+      "schema": { "$ref": "#/entities/Product" },
+      "description": "Publicly readable catalog products managed exclusively by admins"
+    },
+    "/admins/{adminUid}": {
+      "schema": { "$ref": "#/entities/AdminMember" },
+      "description": "Admin authorization documents"
+    }
+  }
+}

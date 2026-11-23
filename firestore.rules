@@ -1,0 +1,152 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Reusable Hardened Helpers ---
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedEmail() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isBootstrappedAdmin() {
+      return isVerifiedEmail() && request.auth.token.email == 'swag007qq@gmail.com';
+    }
+
+    function isAdmin() {
+      return isBootstrappedAdmin() || (
+        isVerifiedEmail() &&
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function isValidProduct(data) {
+      return data.keys().hasAll([
+        'title',
+        'price',
+        'currency',
+        'image',
+        'sortOrder',
+        'isPublished',
+        'createdBy',
+        'createdAt',
+        'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'title',
+        'subtitle',
+        'price',
+        'currency',
+        'image',
+        'sortOrder',
+        'isPublished',
+        'createdBy',
+        'createdAt',
+        'updatedAt'
+      ]) &&
+      data.title is string &&
+      data.title.size() >= 1 &&
+      data.title.size() <= 80 &&
+      (!('subtitle' in data) || (data.subtitle is string && data.subtitle.size() <= 140)) &&
+      data.price is number &&
+      data.price >= 0 &&
+      data.price <= 1000000 &&
+      data.currency is string &&
+      data.currency.size() >= 1 &&
+      data.currency.size() <= 16 &&
+      data.image is string &&
+      data.image.size() >= 1 &&
+      data.image.size() <= 2048 &&
+      data.sortOrder is number &&
+      data.sortOrder >= 0 &&
+      data.sortOrder <= 10000 &&
+      data.isPublished is bool &&
+      data.createdBy is string &&
+      data.createdBy.size() >= 1 &&
+      data.createdBy.size() <= 128 &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp;
+    }
+
+    function isValidAdminMember(data) {
+      return data.keys().hasAll(['email', 'createdAt']) &&
+        data.keys().hasOnly(['email', 'createdAt']) &&
+        data.email is string &&
+        data.email.size() >= 3 &&
+        data.email.size() <= 160 &&
+        data.createdAt is timestamp;
+    }
+
+    // --- Collection: /products/{productId} ---
+    match /products/{productId} {
+      allow get: if isValidId(productId) && (
+        existing().isPublished == true || isAdmin()
+      );
+
+      allow list: if existing().isPublished == true || isBootstrappedAdmin();
+
+      allow create: if isAdmin() &&
+        isValidId(productId) &&
+        isValidProduct(incoming()) &&
+        incoming().createdBy == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+
+      allow update: if isAdmin() &&
+        isValidId(productId) &&
+        isValidProduct(incoming()) &&
+        incoming().createdBy == existing().createdBy &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'title',
+          'subtitle',
+          'price',
+          'currency',
+          'image',
+          'sortOrder',
+          'isPublished',
+          'updatedAt'
+        ]);
+
+      allow delete: if isAdmin() && isValidId(productId);
+    }
+
+    // --- Collection: /admins/{adminUid} ---
+    match /admins/{adminUid} {
+      allow get: if isValidId(adminUid) && (
+        (isVerifiedEmail() && request.auth.uid == adminUid) || isBootstrappedAdmin()
+      );
+      allow list: if false;
+      allow create, update: if isBootstrappedAdmin() &&
+        isValidId(adminUid) &&
+        isValidAdminMember(incoming()) &&
+        incoming().createdAt == request.time;
+      allow delete: if isBootstrappedAdmin() && isValidId(adminUid);
+    }
+
+    // --- Connection Check Path ---
+    match /test/connection {
+      allow get: if true;
+      allow list, write: if false;
+    }
+  }
+}

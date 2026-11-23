@@ -1,0 +1,153 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --font-sans: "Nunito", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+
+  html,
+  body {
+    font-family: var(--font-sans);
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    max-width: 100%;
+    min-height: 100%;
+    overflow-x: clip;
+    background-color: #d3bcb5;
+    color: #6b4e45;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+}
+
+/* Exact staggered polka-dot wallpaper matching Elza Shop background */
+.elza-wallpaper {
+  background-color: #ceb5ad;
+  background-image:
+    radial-gradient(circle at 50% 42%, rgba(226, 206, 200, 0.55) 0%, rgba(198, 169, 161, 0.35) 100%),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='73' height='74' viewBox='0 0 73 74'%3E%3Ccircle cx='18.25' cy='18.5' r='9' fill='%23EBD4CE' fill-opacity='0.62'/%3E%3Ccircle cx='54.75' cy='55.5' r='9' fill='%23EBD4CE' fill-opacity='0.62'/%3E%3C/svg%3E");
+  background-size: 100% 100%, 73px 74px;
+  background-repeat: no-repeat, repeat;
+}
+
+.elza-card-shadow {
+  box-shadow:
+    0 0 26px rgba(142, 84, 58, 0.44),
+    0 12px 28px -4px rgba(110, 68, 50, 0.28),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+.elza-pill-shadow {
+  box-shadow:
+    0 0 18px rgba(142, 84, 58, 0.42),
+    0 8px 18px rgba(110, 68, 50, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.88);
+}
+
+.elza-buy-btn {
+  background: linear-gradient(180deg, #efbccc 0%, #eab1c2 100%);
+  box-shadow:
+    0 4px 10px rgba(188, 114, 136, 0.25),
+    inset 0 1.5px 0 rgba(255, 255, 255, 0.42),
+    inset 0 -2px 0 rgba(210, 140, 162, 0.45);
+}
+
+.elza-buy-btn:hover {
+  background: linear-gradient(180deg, #f2c3d2 0%, #e7a6b9 100%);
+}
+
+.elza-dark-pill-shadow {
+  box-shadow:
+    0 0 22px rgba(132, 74, 50, 0.56),
+    0 10px 22px rgba(88, 52, 38, 0.34),
+    inset 0 1px 0 rgba(255, 255, 255, 0.2);
+}
+
+@keyframes elzaFloatHeart {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, 0) scale(0.55) rotate(-8deg);
+  }
+  20% {
+    opacity: 1;
+    transform: translate(-50%, -18px) scale(1.1) rotate(6deg);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -86px) scale(0.9) rotate(-6deg);
+  }
+}
+
+.animate-elza-heart {
+  animation: elzaFloatHeart 950ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes elzaScreenHeart {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.25) rotate(var(--heart-rot, 0deg));
+  }
+  22% {
+    opacity: 0.96;
+    transform: translate(-50%, calc(-50% - 14px)) scale(1.16) rotate(var(--heart-rot, 0deg));
+  }
+  68% {
+    opacity: 0.88;
+    transform: translate(-50%, calc(-50% - 34px)) scale(1) rotate(calc(var(--heart-rot, 0deg) * -0.5));
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, calc(-50% - 58px)) scale(0.7) rotate(var(--heart-rot, 0deg));
+  }
+}
+
+.animate-elza-screen-heart {
+  animation: elzaScreenHeart 980ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+@keyframes elzaPetHappy {
+  0% {
+    transform: scale(1, 1) translateY(0);
+  }
+  25% {
+    transform: scale(1.06, 0.94) translateY(4px) rotate(-1.5deg);
+  }
+  55% {
+    transform: scale(0.97, 1.04) translateY(-7px) rotate(1.5deg);
+  }
+  80% {
+    transform: scale(1.02, 0.98) translateY(1px);
+  }
+  100% {
+    transform: scale(1, 1) translateY(0);
+  }
+}
+
+.animate-elza-pet-happy {
+  animation: elzaPetHappy 520ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes elzaSplashLogo {
+  0% {
+    opacity: 0;
+    transform: translateY(14px) scale(0.9) rotate(-2deg);
+  }
+  30% {
+    opacity: 1;
+    transform: translateY(-10px) scale(1.03) rotate(1.5deg);
+  }
+  65% {
+    opacity: 1;
+    transform: translateY(4px) scale(0.99) rotate(-1deg);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(-6px) scale(1.02) rotate(0.5deg);
+  }
+}
+
+.animate-elza-splash-logo {
+  animation: elzaSplashLogo 1150ms cubic-bezier(0.45, 0.05, 0.55, 0.95) forwards;
+}
+
